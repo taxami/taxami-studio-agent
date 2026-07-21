@@ -23,7 +23,9 @@ Scarica l'eseguibile per Windows x64 (nessuna installazione richiesta):
 
 ## Configurazione
 
-Prima del primo avvio, crea il file di configurazione:
+> **Dal v2.1.0:** se lanci l'eseguibile a doppio click e non hai ancora un file di configurazione, l'agente avvia da solo un piccolo wizard: ti chiede di incollare il token e crea `config.json` per te (con le cartelle `Documents`/`Desktop`/`Downloads` disponibili come `allowedDirs`). Non serve più creare il file a mano — puoi comunque farlo, o modificarlo dopo, seguendo lo schema sotto.
+
+In alternativa, puoi creare il file di configurazione manualmente prima del primo avvio:
 
 **Percorso:** `%USERPROFILE%\.taxami-studio-agent\config.json`
 
@@ -52,6 +54,8 @@ Prima del primo avvio, crea il file di configurazione:
 3. Quando hai finito, chiudi la finestra per disconnettere l'agente
 
 > **Nota SmartScreen:** la prima volta Windows potrebbe mostrare un avviso di sicurezza perché l'eseguibile non è firmato con un certificato a pagamento. Clicca **"Ulteriori informazioni" → "Esegui comunque"** per procedere.
+
+> **Dal v2.1.0:** se manca la configurazione o c'è un errore all'avvio (token assente, config non valida), la finestra **non si chiude più da sola** — resta aperta con il messaggio d'errore finché non premi INVIO, così hai il tempo di leggerlo.
 
 ---
 

@@ -4,6 +4,11 @@
  * Prerequisiti: Node.js 18+ (usa fetch globale built-in)
  *
  * Configurazione:
+ *   Al primo avvio, se manca il token e la console è interattiva (doppio
+ *   click sull'exe o lancio da terminale), l'agente chiede il token e crea
+ *   da solo il file di configurazione (vedi v2.1 sotto). In alternativa,
+ *   puoi crearlo a mano:
+ *
  *   Creare il file: ~/.taxami-studio-agent/config.json
  *   Contenuto:
  *   {
@@ -28,6 +33,14 @@
  * v2: lettura binaria + scrittura file/Excel
  *   - Le scritture arrivano SOLO dopo conferma dell'utente sulla webapp
  *   - Mai sovrascrittura: auto-rinomina con suffisso (2), (3), …
+ *
+ * v2.1: mai più uscita silenziosa + wizard al primo avvio
+ *   - Doppio click sull'exe e console che si chiude in un lampo su errore
+ *     (config mancante/token assente): ora, se stdin è un terminale
+ *     interattivo (TTY), la finestra resta aperta finché non premi INVIO.
+ *   - Se manca il token e la console è interattiva, un piccolo wizard
+ *     chiede il token (link alla pagina dove generarlo) e crea da solo
+ *     ~/.taxami-studio-agent/config.json, poi avvia l'agente normalmente.
  */
 
 'use strict';
@@ -36,17 +49,68 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
+const readline = require('readline');
 
-// ─── Node 18+ check ───────────────────────────────────────────────────────────
-if (typeof fetch === 'undefined') {
-  console.error('[ERRORE] Serve Node 18+ per usare questo agente (fetch globale mancante).');
-  console.error('         Versione attuale: ' + process.version);
-  console.error('         Scarica Node 18+ da: https://nodejs.org/');
-  process.exit(1);
+// ─── Non uscire mai in silenzio ────────────────────────────────────────────
+// Lanciato a doppio click su Windows, in caso di errore la console si apre
+// e chiude nell'istante di un fotogramma: l'utente non fa in tempo a
+// leggere nulla. Se stdin è un terminale interattivo (TTY) aspettiamo un
+// INVIO prima di chiudere; se invece stdin è una pipe/non-TTY (script,
+// CI, avvio automatico) usciamo subito come prima — nessun cambiamento di
+// comportamento in quei contesti.
+function ask(question) {
+  return new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
+function fatalExit(code) {
+  if (process.stdin.isTTY) {
+    ask('\nPremi INVIO per chiudere...').then(() => process.exit(code));
+  } else {
+    process.exit(code);
+  }
+}
+
+// ─── First-run wizard ─────────────────────────────────────────────────────────
+// Se manca il token e la console è interattiva, invece di stampare
+// istruzioni tecniche e chiudere, guidiamo l'utente alla creazione della
+// configurazione. Al termine riesegue loadConfig() così l'avvio prosegue
+// per la strada normale (stessa validazione, stessa stampa dell'header).
+async function runFirstRunWizard(configPath, baseUrl) {
+  console.log('[TaxAmi Studio Agent] Nessun token configurato: avvio la procedura guidata.');
+  console.log('Genera un token su taxami.it/studio/agente → "Genera token", poi incollalo qui sotto.');
+  const answer = await ask('Incolla qui il token e premi INVIO: ');
+  const token = answer.trim();
+  if (!token) {
+    console.error('[ERRORE] Nessun token inserito.');
+    return fatalExit(1);
+  }
+
+  const home = os.homedir();
+  const allowedDirs = ['Documents', 'Desktop', 'Downloads']
+    .map((name) => path.join(home, name))
+    .filter((dir) => fs.existsSync(dir));
+  const label = 'PC-' + os.userInfo().username;
+  const newConfig = { token, baseUrl, allowedDirs, label };
+
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(newConfig, null, 2), 'utf-8');
+
+  console.log('');
+  console.log('[OK] Configurazione creata: ' + configPath);
+  console.log('     Puoi modificare le cartelle autorizzate (allowedDirs) direttamente in quel file.');
+  console.log('');
+
+  return loadConfig();
 }
 
 // ─── Config loading ───────────────────────────────────────────────────────────
-function loadConfig() {
+async function loadConfig() {
   const configPath = path.join(os.homedir(), '.taxami-studio-agent', 'config.json');
   let fileConfig = {};
 
@@ -57,17 +121,17 @@ function loadConfig() {
     } catch (e) {
       console.error('[ERRORE] Impossibile leggere config.json: ' + e.message);
       console.error('         Verifica che il file sia JSON valido: ' + configPath);
-      process.exit(1);
+      return fatalExit(1);
     }
   }
 
   const token = process.env.TAXAMI_AGENT_TOKEN || fileConfig.token;
   const baseUrl = process.env.TAXAMI_AGENT_BASEURL || fileConfig.baseUrl || 'https://taxami.it';
-  const allowedDirs = fileConfig.allowedDirs || [];
-  const workspaceDir = fileConfig.workspaceDir || undefined;
-  const label = fileConfig.label || undefined;
 
   if (!token) {
+    if (process.stdin.isTTY) {
+      return runFirstRunWizard(configPath, baseUrl);
+    }
     console.error('[ERRORE] Token mancante. Crea il file di configurazione:');
     console.error('');
     console.error('  Percorso: ' + configPath);
@@ -80,33 +144,27 @@ function loadConfig() {
     console.error('  }');
     console.error('');
     console.error('  Oppure imposta la variabile d\'ambiente: TAXAMI_AGENT_TOKEN=<token>');
-    process.exit(1);
+    return fatalExit(1);
   }
+
+  const allowedDirs = fileConfig.allowedDirs || [];
+  const workspaceDir = fileConfig.workspaceDir || undefined;
+  const label = fileConfig.label || undefined;
 
   if (!Array.isArray(allowedDirs) || allowedDirs.length === 0) {
     console.error('[ERRORE] allowedDirs mancante o vuoto nel file di configurazione.');
     console.error('         Devi specificare almeno una cartella consentita.');
     console.error('         Esempio: "allowedDirs": ["C:\\\\Users\\\\nome\\\\Documenti"]');
-    process.exit(1);
+    return fatalExit(1);
   }
 
   return { token, baseUrl, allowedDirs, workspaceDir, label };
 }
 
-const config = loadConfig();
-
-// Stampa config (token mascherato)
-const maskedToken = config.token.length > 8
-  ? config.token.slice(0, 4) + '****' + config.token.slice(-4)
-  : '****';
-console.log('[TaxAmi Studio Agent]');
-console.log('  baseUrl    : ' + config.baseUrl);
-console.log('  token      : ' + maskedToken);
-console.log('  allowedDirs: ' + config.allowedDirs.join(', '));
-if (config.workspaceDir) console.log('  workspaceDir: ' + config.workspaceDir);
-if (config.label)        console.log('  label       : ' + config.label);
-console.log('');
-console.log('Agente avviato, in ascolto...');
+// Config globale, valorizzata da main() dopo il caricamento/wizard. Le
+// funzioni sotto la referenziano solo quando vengono effettivamente
+// chiamate (mai prima che main() l'abbia impostata).
+let config;
 
 // ─── Path security ────────────────────────────────────────────────────────────
 function isAllowed(target) {
@@ -416,10 +474,39 @@ async function pollOnce() {
   }
 }
 
-// Start polling every 2000ms
-setInterval(() => {
-  pollOnce().catch(e => console.warn('[WARN] Errore inatteso nel poll: ' + e.message));
-}, 2000);
+// ─── Avvio ────────────────────────────────────────────────────────────────────
+async function main() {
+  // Node 18+ check
+  if (typeof fetch === 'undefined') {
+    console.error('[ERRORE] Serve Node 18+ per usare questo agente (fetch globale mancante).');
+    console.error('         Versione attuale: ' + process.version);
+    console.error('         Scarica Node 18+ da: https://nodejs.org/');
+    return fatalExit(1);
+  }
 
-// Run immediately on start
-pollOnce().catch(e => console.warn('[WARN] Errore inatteso nel poll iniziale: ' + e.message));
+  config = await loadConfig();
+  if (!config) return; // fatalExit già in corso (TTY: in attesa di INVIO; non-TTY: già uscito)
+
+  // Stampa config (token mascherato)
+  const maskedToken = config.token.length > 8
+    ? config.token.slice(0, 4) + '****' + config.token.slice(-4)
+    : '****';
+  console.log('[TaxAmi Studio Agent]');
+  console.log('  baseUrl    : ' + config.baseUrl);
+  console.log('  token      : ' + maskedToken);
+  console.log('  allowedDirs: ' + config.allowedDirs.join(', '));
+  if (config.workspaceDir) console.log('  workspaceDir: ' + config.workspaceDir);
+  if (config.label)        console.log('  label       : ' + config.label);
+  console.log('');
+  console.log('Agente avviato, in ascolto...');
+
+  // Start polling every 2000ms
+  setInterval(() => {
+    pollOnce().catch(e => console.warn('[WARN] Errore inatteso nel poll: ' + e.message));
+  }, 2000);
+
+  // Run immediately on start
+  pollOnce().catch(e => console.warn('[WARN] Errore inatteso nel poll iniziale: ' + e.message));
+}
+
+main();
