@@ -32,7 +32,7 @@ In alternativa, puoi creare il file di configurazione manualmente prima del prim
 ```json
 {
   "token": "<token agente>",
-  "baseUrl": "https://taxami.it",
+  "baseUrl": "https://www.taxami.it",
   "allowedDirs": ["C:\\Users\\NomeCognome\\Documenti"],
   "label": "PC-NomeCognome"
 }
@@ -41,9 +41,11 @@ In alternativa, puoi creare il file di configurazione manualmente prima del prim
 | Campo | Descrizione |
 |---|---|
 | `token` | Il token personale generato su [taxami.it/studio/agente](https://taxami.it/studio/agente) |
-| `baseUrl` | Lascia invariato: `https://taxami.it` |
+| `baseUrl` | Lascia invariato: `https://www.taxami.it` (**con www** — vedi nota v2.2.0 sotto) |
 | `allowedDirs` | Elenco delle cartelle a cui l'agente può accedere (percorsi assoluti Windows) |
 | `label` | Nome identificativo del PC nella webapp (es. `PC-Studio`, `Laptop-Marco`) |
+
+> **Dal v2.2.0:** `https://taxami.it` (senza www) reindirizza a `https://www.taxami.it`, e nel redirect Node scarta l'header di autenticazione — ogni collegamento con `baseUrl` senza www falliva con "token non valido" anche con un token corretto. L'agente ora usa `https://www.taxami.it` come default e **normalizza automaticamente** le configurazioni esistenti create senza www, quindi i file già in uso continuano a funzionare senza modifiche.
 
 ---
 

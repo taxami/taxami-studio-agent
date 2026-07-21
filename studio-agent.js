@@ -13,7 +13,7 @@
  *   Contenuto:
  *   {
  *     "token": "<token agente>",
- *     "baseUrl": "https://taxami.it",
+ *     "baseUrl": "https://www.taxami.it",
  *     "allowedDirs": ["C:\\Users\\nome\\Documenti", "C:\\Users\\nome\\Desktop"],
  *     "workspaceDir": "(opzionale)",
  *     "label": "(opzionale, es. PC-Silvia)"
@@ -21,7 +21,7 @@
  *
  *   Variabili d'ambiente (sovrascrivono config):
  *     TAXAMI_AGENT_TOKEN    — token di autenticazione
- *     TAXAMI_AGENT_BASEURL  — URL base (default: https://taxami.it)
+ *     TAXAMI_AGENT_BASEURL  — URL base (default: https://www.taxami.it)
  *
  * Avvio:
  *   node studio-agent.js
@@ -34,6 +34,9 @@
  *   - Le scritture arrivano SOLO dopo conferma dell'utente sulla webapp
  *   - Mai sovrascrittura: auto-rinomina con suffisso (2), (3), …
  *
+ * v3: info file (data modifica/dimensione), copia file, sposta/rinomina file
+ *   - Info file è sola lettura, copia/sposta richiedono conferma come le scritture
+ *
  * v2.1: mai più uscita silenziosa + wizard al primo avvio
  *   - Doppio click sull'exe e console che si chiude in un lampo su errore
  *     (config mancante/token assente): ora, se stdin è un terminale
@@ -41,6 +44,14 @@
  *   - Se manca il token e la console è interattiva, un piccolo wizard
  *     chiede il token (link alla pagina dove generarlo) e crea da solo
  *     ~/.taxami-studio-agent/config.json, poi avvia l'agente normalmente.
+ *
+ * v2.2: baseUrl di default con www (evita 401 "fantasma")
+ *   - https://taxami.it risponde con un redirect 308 verso
+ *     https://www.taxami.it: il fetch nativo di Node scarta l'header
+ *     Authorization nei redirect cross-host, quindi ogni poll tornava 401
+ *     "token non valido" anche con un token corretto. Il default e le
+ *     configurazioni esistenti senza www vengono ora normalizzati
+ *     automaticamente su https://www.taxami.it.
  */
 
 'use strict';
@@ -74,6 +85,20 @@ function fatalExit(code) {
   } else {
     process.exit(code);
   }
+}
+
+// ─── baseUrl normalization ────────────────────────────────────────────────────
+// https://taxami.it risponde con un 308 verso https://www.taxami.it: nel
+// salto cross-host il fetch nativo di Node scarta l'header Authorization,
+// quindi ogni poll con baseUrl senza www torna 401 anche con un token
+// corretto. Riscriviamo qui SOLO le varianti "nude" di taxami.it (con o
+// senza slash finale, http o https) verso l'host con www: eventuali altri
+// baseUrl (es. ambienti di test) restano intatti.
+function normalizeBaseUrl(url) {
+  if (/^https?:\/\/taxami\.it\/?$/i.test(url)) {
+    return 'https://www.taxami.it';
+  }
+  return url;
 }
 
 // ─── First-run wizard ─────────────────────────────────────────────────────────
@@ -126,7 +151,9 @@ async function loadConfig() {
   }
 
   const token = process.env.TAXAMI_AGENT_TOKEN || fileConfig.token;
-  const baseUrl = process.env.TAXAMI_AGENT_BASEURL || fileConfig.baseUrl || 'https://taxami.it';
+  const baseUrl = normalizeBaseUrl(
+    process.env.TAXAMI_AGENT_BASEURL || fileConfig.baseUrl || 'https://www.taxami.it'
+  );
 
   if (!token) {
     if (process.stdin.isTTY) {
@@ -138,7 +165,7 @@ async function loadConfig() {
     console.error('  Contenuto:');
     console.error('  {');
     console.error('    "token": "<token agente>",');
-    console.error('    "baseUrl": "https://taxami.it",');
+    console.error('    "baseUrl": "https://www.taxami.it",');
     console.error('    "allowedDirs": ["C:\\\\Users\\\\nome\\\\Documenti"],');
     console.error('    "label": "PC-NomeCognome"');
     console.error('  }');
@@ -379,6 +406,49 @@ async function handleWriteBinary({ path: filePath, contentBase64 }) {
   return 'File scritto: ' + final + ' (' + buf.length + ' byte)';
 }
 
+async function handleFileInfo({ path: filePath }) {
+  if (!isAllowed(filePath)) {
+    throw new Error('Percorso non autorizzato: ' + filePath);
+  }
+  const abs = path.resolve(filePath);
+  const stat = await fsp.stat(abs);
+  return JSON.stringify({
+    path: abs,
+    isDirectory: stat.isDirectory(),
+    sizeBytes: stat.size,
+    modifiedAt: stat.mtime.toISOString(),
+    createdAt: stat.birthtime.toISOString(),
+  });
+}
+
+async function handleCopyFile({ sourcePath, destPath }) {
+  if (!isAllowed(sourcePath)) {
+    throw new Error('Percorso di origine non autorizzato: ' + sourcePath);
+  }
+  if (!isAllowed(destPath)) {
+    throw new Error('Percorso di destinazione non autorizzato: ' + destPath);
+  }
+  const absSrc = path.resolve(sourcePath);
+  const absDest = await uniquePath(path.resolve(destPath));
+  await fsp.mkdir(path.dirname(absDest), { recursive: true });
+  await fsp.copyFile(absSrc, absDest);
+  return 'File copiato: ' + absDest;
+}
+
+async function handleMoveFile({ sourcePath, destPath }) {
+  if (!isAllowed(sourcePath)) {
+    throw new Error('Percorso di origine non autorizzato: ' + sourcePath);
+  }
+  if (!isAllowed(destPath)) {
+    throw new Error('Percorso di destinazione non autorizzato: ' + destPath);
+  }
+  const absSrc = path.resolve(sourcePath);
+  const absDest = await uniquePath(path.resolve(destPath));
+  await fsp.mkdir(path.dirname(absDest), { recursive: true });
+  await fsp.rename(absSrc, absDest);
+  return 'File spostato: ' + absDest;
+}
+
 async function dispatchOp(op) {
   const { action, params } = op;
   switch (action) {
@@ -388,6 +458,9 @@ async function dispatchOp(op) {
     case 'pc_write_file':   return { ok: true, result: await handleWriteFile(params) };
     case 'pc_read_binary':  return { ok: true, result: await handleReadBinary(params) };
     case 'pc_write_binary': return { ok: true, result: await handleWriteBinary(params) };
+    case 'pc_file_info':    return { ok: true, result: await handleFileInfo(params) };
+    case 'pc_copy_file':    return { ok: true, result: await handleCopyFile(params) };
+    case 'pc_move_file':    return { ok: true, result: await handleMoveFile(params) };
     default:
       return { ok: false, error: 'Azione non supportata da questa versione dell\'agente.' };
   }
@@ -422,6 +495,7 @@ async function pollOnce() {
     if (!pollRes.ok) {
       if (pollRes.status === 401) {
         console.error('[ERRORE] Token non valido o scaduto (401). Verifica la configurazione.');
+        console.error('         Verifica che baseUrl sia https://www.taxami.it (con www).');
       } else {
         console.warn('[WARN] Poll risposta ' + pollRes.status);
       }
