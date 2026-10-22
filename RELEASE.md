@@ -10,7 +10,7 @@ version. Keep `VERSION` equal to the latest published release.
 
 ## Tag and publish
 
-1. PR merged by its creator (only the CTO or Marco); the Windows `.exe` has been built and tested.
+1. The release PR is merged by its creator, with the approver's explicit via — Marco or the CTO (Luigi Brancati) — in that conversation; the Windows `.exe` has been built and tested.
 2. On `main`, clean tree, `VERSION` equals `X.Y.Z`:
 
    ```bash
