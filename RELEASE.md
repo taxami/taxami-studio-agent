@@ -5,18 +5,23 @@ and the tag identifies the published build; a commit or a branch is not a releas
 
 ## Version
 
-`VERSION` (root of this repo), semantic version. The release PR bumps it; the tag is `v` + that
-version. Keep `VERSION` equal to the latest published release.
+`VERSION` (root of this repo), semantic version. The release PR bumps it (`main` takes no direct
+pushes); the tag is `v` + that version. Keep `VERSION` equal to the latest published release. Levels
+while major is 0: **patch** = fix, **minor** = new capability or contract change, **major** (`1.0.0`)
+= the approver's decision.
 
 ## Tag and publish
 
-1. The release PR is merged by its creator, with the approver's explicit via — Marco or the CTO (Luigi Brancati) — in that conversation; the Windows `.exe` has been built and tested.
-2. On `main`, clean tree, `VERSION` equals `X.Y.Z`:
+1. The release PR is merged by its creator, with the approver's explicit via — Marco or the CTO (Luigi Brancati) — in that conversation (per PR for a merge, per version for a release; the release via names the version: `release vX.Y.Z: merge, tag, publish`); the Windows `.exe` has been built and tested.
+2. On `main`, clean tree, `VERSION` equals `X.Y.Z`, on the release PR's squash commit:
 
    ```bash
-   git tag -a vX.Y.Z -m '<summary>'
+   git tag -a vX.Y.Z -m '<included PRs and changelog numbers>'
    git push origin refs/tags/vX.Y.Z
    ```
+
+   Docs-only and CI-only PRs are not releases: they merge, get no tag, and ship with the next
+   release (`git log vLATEST..origin/main` lists what is unreleased).
 
 3. Create the GitHub release for the tag and attach the built binary as `TaxamiStudioAgent.exe`.
    The README download link (`/releases/latest/download/TaxamiStudioAgent.exe`) follows the latest
