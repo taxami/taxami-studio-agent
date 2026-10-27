@@ -12,6 +12,13 @@ Scarica l'eseguibile per Windows x64 (nessuna installazione richiesta):
 
 **[TaxamiStudioAgent.exe](https://github.com/taxami-dev/taxami-studio-agent/releases/latest/download/TaxamiStudioAgent.exe)**
 
+## Releases
+
+Ogni rilascio è un tag `vX.Y.Z` su `main`, con una serie di versioni propria del repo; l'eseguibile
+pubblicato corrisponde al tag. Un commit o un branch non sono un rilascio. Regola generale:
+`../AGENTS.md`; procedura completa: `taxami-webapp/AGENTS.md` (ADR-045). Passi concreti di tag,
+pubblicazione dell'eseguibile e rollback: `RELEASE.md`.
+
 ---
 
 ## Requisiti
