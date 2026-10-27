@@ -6,8 +6,9 @@ name: CI
 # esiste perché solo lì si può eseguire il binario.
 
 on:
+  # Nessun filtro di branch sulle PR: una PR impilata (base diversa da main,
+  # come questa sul runbook di release) non farebbe partire nulla.
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 
