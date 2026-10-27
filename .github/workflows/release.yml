@@ -39,6 +39,9 @@ jobs:
           cache: npm
       - run: npm ci
 
+      - name: Test (guardia percorsi e collegamenti, SEC-032)
+        run: npm test
+
       # Un tag che non corrisponde a VERSION pubblicherebbe un binario che
       # dichiara una versione diversa dalla propria: si ferma qui.
       - name: Il tag corrisponde a VERSION

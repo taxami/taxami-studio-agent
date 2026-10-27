@@ -103,6 +103,8 @@ L'eseguibile lo produce solo lo script di build, che inietta `VERSION` nel sorge
 
 ```bash
 npm ci
+npm run check              # sintassi
+npm test                   # guardia percorsi e collegamenti (SEC-032)
 npm run build:exe        # → dist/TaxamiStudioAgent.exe + dist/SHA256SUMS.txt
 npm run verify:embedded  # il sorgente dentro l'exe coincide con quello del tag?
 npm run e2e              # agente vero contro un finto server, nessuna rete

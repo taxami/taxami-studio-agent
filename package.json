@@ -5,6 +5,7 @@
   "bin": "studio-agent.js",
   "scripts": {
     "check": "node --check studio-agent.js",
+    "test": "node --test tests/**/*.test.js",
     "build:exe": "node scripts/build-exe.mjs",
     "e2e": "node scripts/e2e-agent.mjs",
     "verify:embedded": "node scripts/verify-embedded.mjs"

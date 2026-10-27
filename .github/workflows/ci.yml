@@ -32,6 +32,8 @@ jobs:
       - run: npm ci
       - name: Sintassi
         run: npm run check
+      - name: Test (guardia percorsi e collegamenti, SEC-032)
+        run: npm test
       - name: Flag --version e --self-test
         run: |
           node studio-agent.js --version
@@ -49,6 +51,11 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+
+      # Anche su Windows: è l'unico runner dove le junction sono junction vere,
+      # e i casi di escape sono proprio lì.
+      - name: Test sul runner Windows
+        run: npm test
 
       - name: Build dell'eseguibile
         run: npm run build:exe
