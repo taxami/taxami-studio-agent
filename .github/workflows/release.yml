@@ -1,0 +1,95 @@
+name: Release
+
+# Il tag è l'unico innesco della pubblicazione: su push di un tag vX.Y.Z il
+# workflow ricostruisce dallo stesso commit, verifica il binario, firma
+# l'attestazione di provenienza e crea la release con gli asset. Nessun
+# eseguibile viene caricato a mano (RELEASE.md § Tag and publish).
+#
+# workflow_dispatch è solo una prova: costruisce e attesta, non pubblica.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      # Un tag che non corrisponde a VERSION pubblicherebbe un binario che
+      # dichiara una versione diversa dalla propria: si ferma qui.
+      - name: Il tag corrisponde a VERSION
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(cat VERSION)"
+          echo "tag=$tag VERSION=$version"
+          [ "$tag" = "$version" ]
+
+      - name: Build dell'eseguibile
+        run: npm run build:exe
+
+      - name: Il sorgente dentro l'exe è quello del tag
+        run: npm run verify:embedded
+
+      - name: L'eseguibile dichiara VERSION
+        shell: bash
+        run: |
+          got="$(./dist/TaxamiStudioAgent.exe --version)"
+          want="TaxAmi Studio Agent $(cat VERSION)"
+          echo "eseguibile: $got / atteso: $want"
+          [ "$got" = "$want" ]
+
+      - name: Self-test sull'eseguibile
+        run: ./dist/TaxamiStudioAgent.exe --self-test
+
+      - name: End-to-end sull'eseguibile
+        run: npm run e2e -- --bin dist/TaxamiStudioAgent.exe
+
+      - name: Attestazione di provenienza
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/TaxamiStudioAgent.exe
+
+      - name: Pubblica la release
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/TaxamiStudioAgent.exe dist/SHA256SUMS.txt \
+            --verify-tag \
+            --title "TaxAmi Studio Agent $GITHUB_REF_NAME" \
+            --generate-notes
+
+      # Pubblicare non è verificare: l'asset viene riscaricato e confrontato
+      # con il checksum prodotto dalla build, così un upload troncato o
+      # sostituito fa fallire il workflow invece di passare inosservato.
+      - name: Rileggi l'asset pubblicato
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          mkdir -p verify && cd verify
+          gh release download "$GITHUB_REF_NAME" -p TaxamiStudioAgent.exe -p SHA256SUMS.txt
+          sha256sum -c SHA256SUMS.txt
+          rm -f TaxamiStudioAgent.exe SHA256SUMS.txt

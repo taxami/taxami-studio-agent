@@ -1,0 +1,85 @@
+name: CI
+
+# Due lavori: il primo controlla il sorgente in pochi secondi, il secondo
+# costruisce l'eseguibile vero e lo esegue su Windows. Il repo è pubblico,
+# quindi i minuti dei runner standard non sono conteggiati; il lavoro Windows
+# esiste perché solo lì si può eseguire il binario.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    name: source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Sintassi
+        run: npm run check
+      - name: Flag --version e --self-test
+        run: |
+          node studio-agent.js --version
+          node studio-agent.js --self-test
+      - name: End-to-end sul sorgente
+        run: npm run e2e
+
+  artifact:
+    name: artifact (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+
+      - name: Build dell'eseguibile
+        run: npm run build:exe
+
+      # Il controllo che con il vecchio vercel/pkg era impossibile: il file
+      # dentro l'exe deve essere, byte per byte, quello prodotto da questo commit.
+      - name: Il sorgente dentro l'exe è quello del commit
+        run: npm run verify:embedded
+
+      - name: L'eseguibile dichiara VERSION
+        shell: bash
+        run: |
+          got="$(./dist/TaxamiStudioAgent.exe --version)"
+          want="TaxAmi Studio Agent $(cat VERSION)"
+          echo "eseguibile: $got / atteso: $want"
+          [ "$got" = "$want" ]
+
+      - name: Self-test sull'eseguibile
+        run: ./dist/TaxamiStudioAgent.exe --self-test
+
+      - name: End-to-end sull'eseguibile (poll, allowedDirs, collegamenti)
+        run: npm run e2e -- --bin dist/TaxamiStudioAgent.exe
+
+      # Misurato deterministico il 2026-10-27 (pkg 6.24.0): due build dello
+      # stesso albero danno lo stesso sha256. Se smettesse di valere, questo
+      # step lo dice invece di lasciar credere che la riproducibilità sia ovvia.
+      - name: Determinismo (due build, stesso sha256)
+        shell: bash
+        run: |
+          node scripts/build-exe.mjs --out dist/repeat/TaxamiStudioAgent.exe
+          first=$(sha256sum dist/TaxamiStudioAgent.exe | cut -d' ' -f1)
+          second=$(sha256sum dist/repeat/TaxamiStudioAgent.exe | cut -d' ' -f1)
+          echo "build 1: $first"
+          echo "build 2: $second"
+          [ "$first" = "$second" ]
