@@ -26,10 +26,13 @@ by hand. What the build fixes in place:
   disagrees with `VERSION`;
 - output `dist/TaxamiStudioAgent.exe` plus `dist/SHA256SUMS.txt`.
 
-Measured on 2026-10-27 (pkg 6.24.0, Linux): two consecutive builds of the same tree produced the same
-sha256, so the CI gate on a repeated build is meaningful, not decorative. The Windows executable is
-93,332,266 bytes against the 37,678,828 of the v2.2.0 Node 18 build: Node 24 bases are simply larger.
-The artifact stays unsigned; SmartScreen behaviour is unchanged.
+Measured on 2026-10-27 (pkg 6.24.0): two consecutive builds of the same tree produced the same sha256
+(`f23de8db…` on Linux, `fdf049ff…` on the Windows runner), so CI can gate on a repeated build.
+The digest is **per platform**, not global: a Linux cross-build and a Windows build of the same
+commit differ, so never compare a local hash with the published one — the published artifact comes
+from `windows-latest`, and the guarantee is the embedded-source check, not the hash. The Windows
+executable is 93,332,266 bytes against the 37,678,828 of the v2.2.0 Node 18 build: Node 24 bases are
+simply larger. The artifact stays unsigned; SmartScreen behaviour is unchanged.
 
 ## Tag and publish
 
