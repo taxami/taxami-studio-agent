@@ -15,7 +15,9 @@ Scarica l'eseguibile per Windows x64 (nessuna installazione richiesta):
 ## Releases
 
 Ogni rilascio è un tag `vX.Y.Z` su `main`, con una serie di versioni propria del repo; l'eseguibile
-pubblicato corrisponde al tag. Un commit o un branch non sono un rilascio. Regola generale:
+pubblicato corrisponde al tag. Un commit o un branch non sono un rilascio. La release PR si mergia con
+**`gh pr merge --merge`** (mai `--squash` né `--rebase`) e il tag va su quel commit a due parent,
+verificato con `git rev-list --parents -n 1 vX.Y.Z`. Regola generale:
 `../AGENTS.md`; procedura completa: `taxami-webapp/AGENTS.md` (ADR-045). Passi concreti di tag,
 pubblicazione dell'eseguibile e rollback: `RELEASE.md`.
 

@@ -13,7 +13,8 @@ while major is 0: **patch** = fix, **minor** = new capability or contract change
 ## Tag and publish
 
 1. The release PR is merged by its creator, with the approver's explicit via — Marco or the CTO (Luigi Brancati) — in that conversation (per PR for a merge, per version for a release; the release via names the version: `release vX.Y.Z: merge, tag, publish`); the Windows `.exe` has been built and tested.
-2. On `main`, clean tree, `VERSION` equals `X.Y.Z`, on the release PR's squash commit:
+2. On `main`, clean tree, `VERSION` equals `X.Y.Z`, on the release PR's **merge commit**
+   (`git rev-list --parents -n 1 HEAD` prints two parents; a squash promotion is forbidden):
 
    ```bash
    git tag -a vX.Y.Z -m '<included PRs and changelog numbers>'
