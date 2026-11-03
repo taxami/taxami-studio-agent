@@ -35,6 +35,21 @@ There is no server: publishing the release asset is the deploy, and nothing else
 Re-publish the previous release as the latest (or attach the previous binary to a new tag); never
 move or delete a deployed tag. A wrong release gets a new version.
 
+## Hotfix
+
+The tag rule wins: a hotfix is a **fast lane of the same procedure**, never an exception. Order:
+
+1. **Roll back first.** Re-publish the previous release as the latest (see Rollback), so users can
+   install a working build while the real fix is prepared.
+2. **Fast lane.** PR **from `main`** (not from an integration branch), `.exe` built and tested, merged
+   with its own via, **patch release** with the tag on that merge commit, then publish the release as
+   above. The fix PR may carry the bump. A tag is **never** created on a hotfix branch.
+3. **Break-glass** only when 1 and 2 are impossible (for example GitHub or the Actions quota is down)
+   and the approver explicitly authorizes it naming "break-glass": the commit is on a branch on
+   GitHub, the worktree is clean, the published asset reports that commit (`BUILD_COMMIT`), and the
+   release notes mark the build **UNTAGGED**. Reconcile the same day with a PR, merge, tag and a
+   re-published release.
+
 ## Out of scope
 
 There is no preview or `develop` deployment for this component.
