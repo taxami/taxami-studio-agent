@@ -82,6 +82,7 @@ In alternativa, puoi creare il file di configurazione manualmente prima del prim
 - Il token è legato al tuo account TaxAmi Studio e può essere revocato in qualsiasi momento dalla webapp
 - Nessun file viene trasmesso automaticamente: la lettura avviene solo su richiesta esplicita dell'assistente AI durante una sessione attiva
 - Le operazioni di scrittura richiedono sempre una conferma separata nella webapp prima di essere eseguite
+- **Il token si rinnova da solo** (da v3.2.0): quando ha più di 30 giorni, o la sua età non è nota (un token appena generato dalla pagina), l'agente ne chiede uno nuovo a TaxAmi, lo salva in `config.json` e lo usa dal poll successivo. Nel file compaiono per questo `tokenIssuedAt` e, per pochi secondi durante il rinnovo, `pendingToken`/`pendingIssuedAt`: non vanno modificati a mano. Se il salvataggio non riesce il token attuale resta in uso. Con il token passato da `TAXAMI_AGENT_TOKEN` il rinnovo non avviene (non c'è un file dove salvarlo), e dopo 30 giorni senza poll il token scade comunque e va rigenerato dalla pagina.
 
 ---
 
