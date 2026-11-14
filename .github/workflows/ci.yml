@@ -76,6 +76,18 @@ jobs:
       - name: Self-test sull'eseguibile
         run: ./dist/TaxamiStudioAgent.exe --self-test
 
+      # Lo script Node pubblicato accanto all'exe: stessa versione iniettata,
+      # e la sua impronta sta nello stesso SHA256SUMS.txt.
+      - name: Lo script pubblicato dichiara VERSION ed è nei checksum
+        shell: bash
+        run: |
+          got="$(node dist/studio-agent.js --version)"
+          want="TaxAmi Studio Agent $(cat VERSION)"
+          echo "script: $got / atteso: $want"
+          [ "$got" = "$want" ]
+          node dist/studio-agent.js --self-test
+          (cd dist && sha256sum -c SHA256SUMS.txt)
+
       - name: End-to-end sull'eseguibile (poll, allowedDirs, collegamenti)
         run: npm run e2e -- --bin dist/TaxamiStudioAgent.exe
 

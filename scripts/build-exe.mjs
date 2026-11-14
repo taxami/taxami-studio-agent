@@ -10,6 +10,9 @@
  *
  *   node scripts/build-exe.mjs [--out dist/TaxamiStudioAgent.exe] [--target node24-win-x64]
  *
+ * Accanto all'exe esce dist/studio-agent.js (lo stesso sorgente, versione
+ * iniettata) e SHA256SUMS.txt con l'impronta di entrambi.
+ *
  * Con GITHUB_REF_NAME (tag push) la versione del tag deve coincidere con
  * VERSION, altrimenti la build si ferma prima di produrre qualcosa.
  */
@@ -107,10 +110,26 @@ if (size < 10 * 1024 * 1024) {
   fail('eseguibile sospettosamente piccolo (' + size + ' byte): manca la base Node?');
 }
 
-const sha256 = createHash('sha256').update(readFileSync(args.out)).digest('hex');
-const checksumFile = path.join(path.dirname(args.out), 'SHA256SUMS.txt');
-writeFileSync(checksumFile, sha256 + '  ' + path.basename(args.out) + '\n', 'utf8');
+// ─── Script Node pubblicato accanto all'exe ──────────────────────────────────
+// Lo stesso sorgente impacchettato (versione già iniettata) esce anche come
+// file a sé: chi usa Node scarica dalla release lo script del tag, che si
+// dichiara con la stessa versione dell'exe invece di 'dev'. La webapp lo
+// linka da /studio/agente; il suo SHA-256 sta nello stesso SHA256SUMS.txt.
+const outDir = path.dirname(args.out);
+const scriptOut = path.join(outDir, 'studio-agent.js');
+writeFileSync(scriptOut, readFileSync(builtScript));
+
+const digest = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
+const artifacts = [args.out, scriptOut].map((file) => ({ file, sha256: digest(file) }));
+const checksumFile = path.join(outDir, 'SHA256SUMS.txt');
+writeFileSync(
+  checksumFile,
+  artifacts.map(({ file, sha256 }) => sha256 + '  ' + path.basename(file) + '\n').join(''),
+  'utf8'
+);
 
 console.log('[build-exe] ' + path.relative(ROOT, args.out) + ' ' + size + ' byte');
-console.log('[build-exe] sha256 ' + sha256);
+for (const { file, sha256 } of artifacts) {
+  console.log('[build-exe] sha256 ' + sha256 + '  ' + path.relative(ROOT, file));
+}
 console.log('[build-exe] checksum in ' + path.relative(ROOT, checksumFile));

@@ -24,7 +24,8 @@ by hand. What the build fixes in place:
   can prove the shipped script is the tagged one;
 - `AGENT_VERSION` replaced by `VERSION`, and the build refuses to run when a pushed tag `vX.Y.Z`
   disagrees with `VERSION`;
-- output `dist/TaxamiStudioAgent.exe` plus `dist/SHA256SUMS.txt`.
+- output `dist/TaxamiStudioAgent.exe`, `dist/studio-agent.js` (the same source with `VERSION`
+  injected, for users who run the agent with Node) and `dist/SHA256SUMS.txt` with the digest of both.
 
 Measured on 2026-10-27 (pkg 6.24.0): two consecutive builds of the same tree produced the same sha256
 (`f23de8db…` on Linux, `fdf049ff…` on the Windows runner), so CI can gate on a repeated build.
@@ -51,10 +52,11 @@ simply larger. The artifact stays unsigned; SmartScreen behaviour is unchanged.
 3. `.github/workflows/release.yml` takes over from the tag push: it asserts `VERSION` == the tag,
    rebuilds, checks the embedded source, runs the binary (`--version`, `--self-test`) and the
    end-to-end harness on `windows-latest`, signs a build provenance attestation, creates the release
-   with `gh release create --verify-tag` and attaches `TaxamiStudioAgent.exe` + `SHA256SUMS.txt`,
-   then re-downloads the published asset and compares the digest. The README download link
-   (`/releases/latest/download/TaxamiStudioAgent.exe`) follows the latest release, so the asset name
-   is part of the contract. If the workflow is ever bypassed by a manual upload, the release is
+   with `gh release create --verify-tag` and attaches `TaxamiStudioAgent.exe`, `studio-agent.js` and
+   `SHA256SUMS.txt`, then re-downloads the published assets and compares the digests. The download
+   links (`/releases/latest/download/TaxamiStudioAgent.exe` here and in the README,
+   `/releases/latest/download/studio-agent.js` and `/SHA256SUMS.txt` on taxami.it `/studio/agente`)
+   follow the latest release, so the asset names are part of the contract. If the workflow is ever bypassed by a manual upload, the release is
    invalid: delete the asset and re-run the workflow on the tag.
 
 There is no server: publishing the release asset is the deploy, and nothing else runs in production.
@@ -65,6 +67,7 @@ There is no server: publishing the release asset is the deploy, and nothing else
 gh release download vX.Y.Z -R taxami/taxami-studio-agent
 sha256sum -c SHA256SUMS.txt
 gh attestation verify TaxamiStudioAgent.exe --repo taxami/taxami-studio-agent   # workflow + repo + commit
+gh attestation verify studio-agent.js --repo taxami/taxami-studio-agent
 npm run verify:embedded -- --exe TaxamiStudioAgent.exe                          # script == tag
 ```
 

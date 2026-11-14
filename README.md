@@ -87,14 +87,19 @@ In alternativa, puoi creare il file di configurazione manualmente prima del prim
 
 ## Alternativa: esecuzione via Node.js
 
-Se preferisci non usare l'eseguibile, puoi avviare lo script direttamente con Node 18+:
+Se preferisci non usare l'eseguibile, scarica lo script dalla stessa release dell'exe
+([`studio-agent.js`](https://github.com/taxami/taxami-studio-agent/releases/latest/download/studio-agent.js),
+impronta in [`SHA256SUMS.txt`](https://github.com/taxami/taxami-studio-agent/releases/latest/download/SHA256SUMS.txt))
+e avvialo con Node 18+:
 
 ```bash
+sha256sum -c --ignore-missing SHA256SUMS.txt   # studio-agent.js: OK
 node studio-agent.js
 ```
 
-Richiede lo stesso file `config.json` descritto sopra. Anche lo script accetta `--version` e
-`--self-test`; la versione mostrata è `dev`, perché solo la build inietta `VERSION`.
+Richiede lo stesso file `config.json` descritto sopra. Lo script della release ha la stessa versione
+dell'eseguibile (`--version`) e la dichiara nel poll. Eseguito dal sorgente del repository, invece,
+si dichiara `dev`: solo la build inietta `VERSION`.
 
 ---
 
@@ -107,7 +112,7 @@ L'eseguibile lo produce solo lo script di build, che inietta `VERSION` nel sorge
 npm ci
 npm run check              # sintassi
 npm test                   # guardia percorsi e collegamenti (SEC-032)
-npm run build:exe        # → dist/TaxamiStudioAgent.exe + dist/SHA256SUMS.txt
+npm run build:exe        # → dist/TaxamiStudioAgent.exe + dist/studio-agent.js + dist/SHA256SUMS.txt
 npm run verify:embedded  # il sorgente dentro l'exe coincide con quello del tag?
 npm run e2e              # agente vero contro un finto server, nessuna rete
 npm run e2e -- --bin dist/TaxamiStudioAgent.exe   # lo stesso, sul binario (Windows)
@@ -121,11 +126,13 @@ eseguibile viene caricato a mano su una release.**
 ```bash
 sha256sum -c <(gh release download vX.Y.Z -R taxami/taxami-studio-agent -p SHA256SUMS.txt -O -)
 gh attestation verify TaxamiStudioAgent.exe --repo taxami/taxami-studio-agent
-git show vX.Y.Z:studio-agent.js | grep "const AGENT_VERSION = 'X.Y.Z';"
+gh attestation verify studio-agent.js --repo taxami/taxami-studio-agent
+git show vX.Y.Z:VERSION   # X.Y.Z: la versione che exe e script dichiarano (--version)
 ```
 
-L'attestazione dice da quale workflow, repo e commit è uscito il file; il terzo comando controlla che
-il tag contenga la versione che l'eseguibile dichiara.
+L'attestazione dice da quale workflow, repo e commit è uscito il file; l'ultimo comando controlla che
+il tag porti la versione che exe e script dichiarano. Nel sorgente del tag `AGENT_VERSION` resta
+`'dev'`: la build la sostituisce con `VERSION`.
 
 ---
 
