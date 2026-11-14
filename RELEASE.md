@@ -61,6 +61,11 @@ simply larger. The artifact stays unsigned; SmartScreen behaviour is unchanged.
 
 There is no server: publishing the release asset is the deploy, and nothing else runs in production.
 
+**Neon backup branches.** The agent uses no database. If a release ever takes a Neon backup branch (for
+example before a webapp migration it depends on), the branch is created with `expires_at` 14 days after
+creation and never without an expiry: the workspace rule, detailed in
+`taxami-webapp/docs/RELEASE_CHECKLIST.md` §5.
+
 ## Verification (any release)
 
 ```bash
