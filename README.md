@@ -22,8 +22,10 @@ TaxamiStudioAgent.exe --version
 
 Ogni rilascio è un tag `vX.Y.Z` su `main`, con una serie di versioni propria del repo; l'eseguibile
 pubblicato è costruito dal workflow a partire da quel tag, non da una macchina. Un commit o un branch
-non sono un rilascio. Regola generale: `../AGENTS.md`; procedura completa: `taxami-webapp/AGENTS.md`
-(ADR-045). Passi concreti di tag, pubblicazione, verifica e rollback: `RELEASE.md`.
+non sono una release. La release PR si mergia con **`gh pr merge --merge`** (mai `--squash` né
+`--rebase`) e il tag va su quel commit a due parent, verificato con `git rev-list --parents -n 1 vX.Y.Z`.
+Regola generale: `../AGENTS.md`; procedura completa: `taxami-webapp/AGENTS.md` (ADR-045). Passi
+concreti di tag, pubblicazione, verifica e rollback: `RELEASE.md`.
 
 ---
 
