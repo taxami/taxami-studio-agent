@@ -52,6 +52,24 @@
  *     "token non valido" anche con un token corretto. Il default e le
  *     configurazioni esistenti senza www vengono ora normalizzati
  *     automaticamente su https://www.taxami.it.
+ *
+ * v3.1: collegamenti simbolici e junction non escono più da allowedDirs
+ *   - Il controllo dei percorsi era solo testuale (path.resolve): un
+ *     collegamento simbolico o una junction DENTRO una cartella autorizzata
+ *     che punta FUORI faceva leggere o scrivere fuori. Ora il percorso deve
+ *     stare in una cartella autorizzata sia come testo sia dopo aver risolto
+ *     i collegamenti (fs.realpath); per un file ancora da creare si risolve
+ *     la cartella esistente più vicina; un collegamento pendente (che punta
+ *     a un file non ancora esistente) è rifiutato.
+ *   - La ricerca nel contenuto salta i collegamenti simbolici.
+ *
+ * Versione dichiarata (repo VERSION, iniettata alla build)
+ *   - AGENT_VERSION qui sotto è 'dev' nel sorgente: scripts/build-exe.mjs la
+ *     sostituisce con il contenuto di VERSION al momento della build, quindi
+ *     l'eseguibile pubblicato dichiara da sé quale tag contiene. La versione
+ *     esce all'avvio, nel body del poll (campo `version`) e con --version;
+ *     --self-test verifica senza rete i punti che una build sbagliata
+ *     romperebbe in silenzio (normalizzazione baseUrl, allowedDirs).
  */
 
 'use strict';
@@ -61,6 +79,10 @@ const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
 const readline = require('readline');
+
+// Versione dell'agente. Sostituita alla build con il contenuto di VERSION:
+// vedi scripts/build-exe.mjs. 'dev' significa "eseguito dal sorgente".
+const AGENT_VERSION = 'dev';
 
 // ─── Non uscire mai in silenzio ────────────────────────────────────────────
 // Lanciato a doppio click su Windows, in caso di errore la console si apre
@@ -194,13 +216,59 @@ async function loadConfig() {
 let config;
 
 // ─── Path security ────────────────────────────────────────────────────────────
-function isAllowed(target) {
-  const abs = path.resolve(target);
-  for (const dir of config.allowedDirs) {
-    const d = path.resolve(dir);
-    if (abs === d || abs.startsWith(d + path.sep)) {
-      return true;
+function isWithin(abs, dir) {
+  return abs === dir || abs.startsWith(dir.endsWith(path.sep) ? dir : dir + path.sep);
+}
+
+// Percorso reale (collegamenti simbolici e junction risolti). Se il percorso
+// non esiste ancora (scrittura, destinazione di copia) si risolve l'antenato
+// esistente più vicino e si riattacca la parte mancante, che non può
+// contenere collegamenti perché non esiste. Un collegamento PENDENTE (esiste,
+// ma punta a qualcosa che non c'è) dà ENOENT come un percorso mancante: si
+// riconosce con lstat e si rifiuta, perché scriverci crea il file dove punta.
+// null se non si riesce.
+async function realPathOf(target) {
+  let current = path.resolve(target);
+  const missing = [];
+  for (;;) {
+    try {
+      const real = await fsp.realpath(current);
+      return missing.length ? path.join(real, ...missing.reverse()) : real;
+    } catch (e) {
+      if (e.code !== 'ENOENT' && e.code !== 'ENOTDIR') return null;
+      try {
+        await fsp.lstat(current);
+        return null; // esiste ma non si risolve: collegamento pendente
+      } catch {
+        // davvero mancante: si risale
+      }
+      const parent = path.dirname(current);
+      if (parent === current) return null;
+      missing.push(path.basename(current));
+      current = parent;
     }
+  }
+}
+
+// Autorizzato se il percorso sta in una delle allowedDirs sia come testo sia
+// dopo aver risolto i collegamenti: un collegamento simbolico o una junction
+// dentro una cartella autorizzata che punta fuori viene rifiutato.
+async function isAllowed(target, allowedDirs) {
+  const dirs = allowedDirs || config.allowedDirs;
+  if (typeof target !== 'string' || target === '') return false;
+  const abs = path.resolve(target);
+  if (!dirs.some((dir) => isWithin(abs, path.resolve(dir)))) return false;
+
+  const real = await realPathOf(abs);
+  if (!real) return false;
+  for (const dir of dirs) {
+    let realDir;
+    try {
+      realDir = await fsp.realpath(path.resolve(dir));
+    } catch {
+      continue; // cartella autorizzata inesistente: non autorizza nulla
+    }
+    if (isWithin(real, realDir)) return true;
   }
   return false;
 }
@@ -220,7 +288,7 @@ async function uniquePath(absPath) {
 // ─── Op handlers ─────────────────────────────────────────────────────────────
 
 async function handleReadFile({ path: filePath, maxChars }) {
-  if (!isAllowed(filePath)) {
+  if (!(await isAllowed(filePath))) {
     throw new Error('Percorso non autorizzato: ' + filePath);
   }
 
@@ -252,7 +320,7 @@ async function handleReadFile({ path: filePath, maxChars }) {
 }
 
 async function handleListDir({ path: dirPath, recursive }) {
-  if (!isAllowed(dirPath)) {
+  if (!(await isAllowed(dirPath))) {
     throw new Error('Percorso non autorizzato: ' + dirPath);
   }
 
@@ -290,7 +358,7 @@ async function handleListDir({ path: dirPath, recursive }) {
 }
 
 async function handleSearchFiles({ query, dir, searchContent }) {
-  if (!isAllowed(dir)) {
+  if (!(await isAllowed(dir))) {
     throw new Error('Percorso non autorizzato: ' + dir);
   }
 
@@ -313,6 +381,9 @@ async function handleSearchFiles({ query, dir, searchContent }) {
     for (const ent of entries) {
       if (scanned >= MAX_SCAN || matches.length >= MAX_MATCHES) return;
       const fullPath = path.join(current, ent.name);
+      // I collegamenti simbolici possono puntare fuori dalle allowedDirs: non
+      // si seguono (né per la ricerca nel contenuto né per scendere).
+      if (ent.isSymbolicLink()) continue;
       if (ent.isDirectory()) {
         if (depth < 4) await walk(fullPath, depth + 1);
         continue;
@@ -357,7 +428,7 @@ async function handleSearchFiles({ query, dir, searchContent }) {
 }
 
 async function handleWriteFile({ path: filePath, content }) {
-  if (!isAllowed(filePath)) {
+  if (!(await isAllowed(filePath))) {
     throw new Error('Percorso non autorizzato: ' + filePath);
   }
   if (typeof content !== 'string') {
@@ -372,7 +443,7 @@ async function handleWriteFile({ path: filePath, content }) {
 }
 
 async function handleReadBinary({ path: filePath, maxBytes }) {
-  if (!isAllowed(filePath)) {
+  if (!(await isAllowed(filePath))) {
     throw new Error('Percorso non autorizzato: ' + filePath);
   }
   const abs = path.resolve(filePath);
@@ -392,7 +463,7 @@ async function handleReadBinary({ path: filePath, maxBytes }) {
 }
 
 async function handleWriteBinary({ path: filePath, contentBase64 }) {
-  if (!isAllowed(filePath)) {
+  if (!(await isAllowed(filePath))) {
     throw new Error('Percorso non autorizzato: ' + filePath);
   }
   if (typeof contentBase64 !== 'string' || contentBase64.length === 0) {
@@ -407,7 +478,7 @@ async function handleWriteBinary({ path: filePath, contentBase64 }) {
 }
 
 async function handleFileInfo({ path: filePath }) {
-  if (!isAllowed(filePath)) {
+  if (!(await isAllowed(filePath))) {
     throw new Error('Percorso non autorizzato: ' + filePath);
   }
   const abs = path.resolve(filePath);
@@ -422,10 +493,10 @@ async function handleFileInfo({ path: filePath }) {
 }
 
 async function handleCopyFile({ sourcePath, destPath }) {
-  if (!isAllowed(sourcePath)) {
+  if (!(await isAllowed(sourcePath))) {
     throw new Error('Percorso di origine non autorizzato: ' + sourcePath);
   }
-  if (!isAllowed(destPath)) {
+  if (!(await isAllowed(destPath))) {
     throw new Error('Percorso di destinazione non autorizzato: ' + destPath);
   }
   const absSrc = path.resolve(sourcePath);
@@ -436,10 +507,10 @@ async function handleCopyFile({ sourcePath, destPath }) {
 }
 
 async function handleMoveFile({ sourcePath, destPath }) {
-  if (!isAllowed(sourcePath)) {
+  if (!(await isAllowed(sourcePath))) {
     throw new Error('Percorso di origine non autorizzato: ' + sourcePath);
   }
-  if (!isAllowed(destPath)) {
+  if (!(await isAllowed(destPath))) {
     throw new Error('Percorso di destinazione non autorizzato: ' + destPath);
   }
   const absSrc = path.resolve(sourcePath);
@@ -473,7 +544,7 @@ async function pollOnce() {
   if (busy) return;
   busy = true;
   try {
-    const pollBody = { allowedDirs: config.allowedDirs };
+    const pollBody = { allowedDirs: config.allowedDirs, version: AGENT_VERSION };
     if (config.workspaceDir) pollBody.workspaceDir = config.workspaceDir;
     if (config.label)        pollBody.label = config.label;
 
@@ -548,8 +619,83 @@ async function pollOnce() {
   }
 }
 
+// ─── Self-test (usato dalla CI sull'eseguibile compilato) ────────────────────
+// Esercita senza rete i due punti che una build sbagliata romperebbe in
+// silenzio: la normalizzazione del baseUrl e il controllo dei percorsi, incluse
+// le due garanzie v3.1 (un file non ancora esistente dentro allowedDirs deve
+// passare; un collegamento che punta fuori deve essere rifiutato).
+async function runSelfTest() {
+  const failures = [];
+  const check = (name, condition) => {
+    if (!condition) failures.push(name);
+  };
+
+  check('baseUrl nudo https', normalizeBaseUrl('https://taxami.it') === 'https://www.taxami.it');
+  check('baseUrl nudo http con slash', normalizeBaseUrl('http://taxami.it/') === 'https://www.taxami.it');
+  check('baseUrl con www intatto', normalizeBaseUrl('https://www.taxami.it') === 'https://www.taxami.it');
+  check('baseUrl locale intatto', normalizeBaseUrl('http://127.0.0.1:2345') === 'http://127.0.0.1:2345');
+
+  const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'taxami-agent-selftest-'));
+  try {
+    const allowed = path.join(root, 'allowed');
+    const outside = path.join(root, 'outside');
+    await fsp.mkdir(allowed, { recursive: true });
+    await fsp.mkdir(outside, { recursive: true });
+    await fsp.writeFile(path.join(allowed, 'ok.txt'), 'ok', 'utf8');
+    await fsp.writeFile(path.join(outside, 'secret.txt'), 'secret', 'utf8');
+
+    config = { allowedDirs: [allowed] };
+    check('dentro allowedDirs', await isAllowed(path.join(allowed, 'ok.txt')));
+    check('fuori allowedDirs', !(await isAllowed(path.join(outside, 'secret.txt'))));
+    check('percorso vuoto', !(await isAllowed('')));
+    check('file ancora da creare dentro', await isAllowed(path.join(allowed, 'nuovo.txt')));
+
+    // v3.1: un collegamento dentro allowedDirs che punta fuori non autorizza.
+    const link = path.join(allowed, 'link-esterno');
+    let linked = false;
+    try {
+      await fsp.symlink(outside, link, 'junction');
+      linked = true;
+    } catch (e) {
+      try {
+        await fsp.symlink(outside, link, 'dir');
+        linked = true;
+      } catch (e2) {
+        // Windows senza privilegi di creazione collegamenti: caso saltato.
+      }
+    }
+    if (linked) {
+      check('collegamento che esce da allowedDirs', !(await isAllowed(path.join(link, 'secret.txt'))));
+    } else {
+      console.log('SKIP collegamenti: questa macchina non consente di crearne (nessun privilegio)');
+    }
+  } finally {
+    await fsp.rm(root, { recursive: true, force: true }).catch(() => {});
+  }
+
+  if (failures.length > 0) {
+    console.error('SELFTEST FALLITO: ' + failures.join(', '));
+    return 2;
+  }
+  return 0;
+}
+
 // ─── Avvio ────────────────────────────────────────────────────────────────────
 async function main() {
+  const argv = process.argv.slice(2);
+
+  if (argv.includes('--version')) {
+    console.log('TaxAmi Studio Agent ' + AGENT_VERSION);
+    return;
+  }
+
+  if (argv.includes('--self-test')) {
+    const code = await runSelfTest();
+    console.log(code === 0 ? 'SELFTEST OK ' + AGENT_VERSION : 'SELFTEST KO');
+    process.exitCode = code;
+    return;
+  }
+
   // Node 18+ check
   if (typeof fetch === 'undefined') {
     console.error('[ERRORE] Serve Node 18+ per usare questo agente (fetch globale mancante).');
@@ -565,7 +711,7 @@ async function main() {
   const maskedToken = config.token.length > 8
     ? config.token.slice(0, 4) + '****' + config.token.slice(-4)
     : '****';
-  console.log('[TaxAmi Studio Agent]');
+  console.log('[TaxAmi Studio Agent] ' + AGENT_VERSION);
   console.log('  baseUrl    : ' + config.baseUrl);
   console.log('  token      : ' + maskedToken);
   console.log('  allowedDirs: ' + config.allowedDirs.join(', '));
@@ -583,4 +729,9 @@ async function main() {
   pollOnce().catch(e => console.warn('[WARN] Errore inatteso nel poll iniziale: ' + e.message));
 }
 
-main();
+module.exports = { isAllowed, realPathOf };
+
+// I test caricano il modulo senza avviare l'agente.
+if (process.env.TAXAMI_STUDIO_AGENT_NO_MAIN !== '1') {
+  main();
+}

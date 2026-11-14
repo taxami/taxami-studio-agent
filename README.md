@@ -10,16 +10,22 @@ Funziona in **sola lettura** per default: legge file e fogli Excel presenti nell
 
 Scarica l'eseguibile per Windows x64 (nessuna installazione richiesta):
 
-**[TaxamiStudioAgent.exe](https://github.com/taxami-dev/taxami-studio-agent/releases/latest/download/TaxamiStudioAgent.exe)**
+**[TaxamiStudioAgent.exe](https://github.com/taxami/taxami-studio-agent/releases/latest/download/TaxamiStudioAgent.exe)**
+
+Ogni eseguibile dichiara la versione che contiene:
+
+```bat
+TaxamiStudioAgent.exe --version
+```
 
 ## Releases
 
 Ogni rilascio è un tag `vX.Y.Z` su `main`, con una serie di versioni propria del repo; l'eseguibile
-pubblicato corrisponde al tag. Un commit o un branch non sono una release. La release PR si mergia con
-**`gh pr merge --merge`** (mai `--squash` né `--rebase`) e il tag va su quel commit a due parent,
-verificato con `git rev-list --parents -n 1 vX.Y.Z`. Regola generale:
-`../AGENTS.md`; procedura completa: `taxami-webapp/AGENTS.md` (ADR-045). Passi concreti di tag,
-pubblicazione dell'eseguibile e rollback: `RELEASE.md`.
+pubblicato è costruito dal workflow a partire da quel tag, non da una macchina. Un commit o un branch
+non sono una release. La release PR si mergia con **`gh pr merge --merge`** (mai `--squash` né
+`--rebase`) e il tag va su quel commit a due parent, verificato con `git rev-list --parents -n 1 vX.Y.Z`.
+Regola generale: `../AGENTS.md`; procedura completa: `taxami-webapp/AGENTS.md` (ADR-045). Passi
+concreti di tag, pubblicazione, verifica e rollback: `RELEASE.md`.
 
 ---
 
@@ -81,13 +87,52 @@ In alternativa, puoi creare il file di configurazione manualmente prima del prim
 
 ## Alternativa: esecuzione via Node.js
 
-Se preferisci non usare l'eseguibile, puoi avviare lo script direttamente con Node 18+:
+Se preferisci non usare l'eseguibile, scarica lo script dalla stessa release dell'exe
+([`studio-agent.js`](https://github.com/taxami/taxami-studio-agent/releases/latest/download/studio-agent.js),
+impronta in [`SHA256SUMS.txt`](https://github.com/taxami/taxami-studio-agent/releases/latest/download/SHA256SUMS.txt))
+e avvialo con Node 18+:
 
 ```bash
+sha256sum -c --ignore-missing SHA256SUMS.txt   # studio-agent.js: OK
 node studio-agent.js
 ```
 
-Richiede lo stesso file `config.json` descritto sopra.
+Richiede lo stesso file `config.json` descritto sopra. Lo script della release ha la stessa versione
+dell'eseguibile (`--version`) e la dichiara nel poll. Eseguito dal sorgente del repository, invece,
+si dichiara `dev`: solo la build inietta `VERSION`.
+
+---
+
+## Sviluppo: come nasce l'eseguibile
+
+L'eseguibile lo produce solo lo script di build, che inietta `VERSION` nel sorgente e impacchetta con
+`@yao-pkg/pkg` su una base Node 24 (`--no-bytecode`, quindi il sorgente resta leggibile dentro l'exe):
+
+```bash
+npm ci
+npm run check              # sintassi
+npm test                   # guardia percorsi e collegamenti (SEC-032)
+npm run build:exe        # → dist/TaxamiStudioAgent.exe + dist/studio-agent.js + dist/SHA256SUMS.txt
+npm run verify:embedded  # il sorgente dentro l'exe coincide con quello del tag?
+npm run e2e              # agente vero contro un finto server, nessuna rete
+npm run e2e -- --bin dist/TaxamiStudioAgent.exe   # lo stesso, sul binario (Windows)
+```
+
+In CI: `.github/workflows/ci.yml` a ogni PR, `.github/workflows/release.yml` al tag. **Nessun
+eseguibile viene caricato a mano su una release.**
+
+## Verificare una release
+
+```bash
+sha256sum -c <(gh release download vX.Y.Z -R taxami/taxami-studio-agent -p SHA256SUMS.txt -O -)
+gh attestation verify TaxamiStudioAgent.exe --repo taxami/taxami-studio-agent
+gh attestation verify studio-agent.js --repo taxami/taxami-studio-agent
+git show vX.Y.Z:VERSION   # X.Y.Z: la versione che exe e script dichiarano (--version)
+```
+
+L'attestazione dice da quale workflow, repo e commit è uscito il file; l'ultimo comando controlla che
+il tag porti la versione che exe e script dichiarano. Nel sorgente del tag `AGENT_VERSION` resta
+`'dev'`: la build la sostituisce con `VERSION`.
 
 ---
 
