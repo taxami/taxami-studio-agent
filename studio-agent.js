@@ -207,13 +207,185 @@ async function loadConfig() {
     return fatalExit(1);
   }
 
-  return { token, baseUrl, allowedDirs, workspaceDir, label };
+  // Rotazione del token (SEC-032 c): possibile solo se il token sta nel file,
+  // perché il token nuovo va salvato prima di usarlo. Con TAXAMI_AGENT_TOKEN
+  // l'agente non ruota.
+  const tokenFromEnv = !!process.env.TAXAMI_AGENT_TOKEN;
+  return {
+    token,
+    baseUrl,
+    allowedDirs,
+    workspaceDir,
+    label,
+    configPath,
+    tokenFromEnv,
+    tokenIssuedAt: tokenFromEnv ? undefined : fileConfig.tokenIssuedAt,
+    pendingToken: tokenFromEnv ? undefined : fileConfig.pendingToken,
+    pendingIssuedAt: tokenFromEnv ? undefined : fileConfig.pendingIssuedAt,
+  };
 }
 
 // Config globale, valorizzata da main() dopo il caricamento/wizard. Le
 // funzioni sotto la referenziano solo quando vengono effettivamente
 // chiamate (mai prima che main() l'abbia impostata).
 let config;
+
+// ─── Rotazione del token (SEC-032 c) ─────────────────────────────────────────
+// Contratto del server (POST /api/studio/agent/token/rotate, taxami-webapp):
+// con il token CORRENTE si ottiene un token nuovo «pending»; il primo poll
+// fatto col pending lo promuove a corrente lato server, e il vecchio vale
+// ancora 10 minuti. Regole del client, in quest'ordine:
+//   1. il pending si salva in config.json (scrittura atomica) PRIMA di usarlo,
+//      accanto al corrente: se il salvataggio fallisce non si usa;
+//   2. dal poll successivo si usa il pending;
+//   3. poll riuscito col pending = promosso: diventa il token nel file;
+//   4. 401 col pending = si scarta e si torna al corrente.
+// Si ruota quando il token ha più di 30 giorni (o la sua età è ignota, cioè
+// un token generato a mano dalla pagina), ben prima della scadenza assoluta
+// di 180 giorni che il server applica solo a chi ha già ruotato.
+const ROTATE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
+const ROTATION_CHECK_MS = 6 * 60 * 60 * 1000;
+const PENDING_MAX_MS = 55 * 60 * 1000; // il server accetta un pending per 60 minuti
+
+// Scrive config.json sostituendo solo le chiavi indicate (undefined = toglie
+// la chiave), via file temporaneo + rinomina: un'interruzione lascia il file
+// vecchio o quello nuovo, mai uno a metà. Permessi 0600 dove esistono.
+function writeConfigAtomic(configPath, patch) {
+  let current = {};
+  try {
+    current = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  }
+  const next = Object.assign({}, current, patch);
+  for (const key of Object.keys(next)) {
+    if (next[key] === undefined) delete next[key];
+  }
+  const tmp = configPath + '.tmp-' + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2), { encoding: 'utf-8', mode: 0o600 });
+  fs.renameSync(tmp, configPath);
+}
+
+// Stato del token sopra la config. `io` permette ai test di sostituire rete,
+// orologio e log; in produzione sono fetch, Date.now e console.
+function createTokenState(cfg, io) {
+  const net = (io && io.fetch) || ((...a) => fetch(...a));
+  const now = (io && io.now) || (() => Date.now());
+  const log = (io && io.log) || ((m) => console.log(m));
+  const warn = (io && io.warn) || ((m) => console.warn(m));
+  let lastCheck = null;
+
+  function canRotate() {
+    return !cfg.tokenFromEnv && !!cfg.configPath;
+  }
+
+  function dropPending(reason) {
+    cfg.pendingToken = undefined;
+    cfg.pendingIssuedAt = undefined;
+    if (canRotate()) {
+      try {
+        writeConfigAtomic(cfg.configPath, { pendingToken: undefined, pendingIssuedAt: undefined });
+      } catch (e) {
+        warn('[WARN] Token: impossibile aggiornare config.json (' + e.message + ')');
+      }
+    }
+    warn('[TOKEN] Token nuovo scartato (' + reason + '): resta in uso quello attuale.');
+  }
+
+  // Token da presentare al prossimo poll: il pending se c'è ed è ancora
+  // nella sua finestra, altrimenti il corrente.
+  function forPoll() {
+    if (cfg.pendingToken) {
+      const issued = Date.parse(cfg.pendingIssuedAt || '');
+      if (!Number.isFinite(issued) || now() - issued > PENDING_MAX_MS) {
+        dropPending('non confermato in tempo');
+      }
+    }
+    return { token: cfg.pendingToken || cfg.token, pending: !!cfg.pendingToken };
+  }
+
+  function onPollOk(used) {
+    if (!used.pending || used.token !== cfg.pendingToken) return;
+    const issuedAt = cfg.pendingIssuedAt || new Date(now()).toISOString();
+    cfg.token = used.token;
+    cfg.tokenIssuedAt = issuedAt;
+    cfg.pendingToken = undefined;
+    cfg.pendingIssuedAt = undefined;
+    try {
+      writeConfigAtomic(cfg.configPath, {
+        token: used.token,
+        tokenIssuedAt: issuedAt,
+        pendingToken: undefined,
+        pendingIssuedAt: undefined,
+      });
+      log('[TOKEN] Token rinnovato e salvato.');
+    } catch (e) {
+      // Il file ha ancora il token nuovo come pendingToken: al prossimo avvio
+      // l'agente lo usa e lo salva come corrente. Nessun accesso perso.
+      warn('[WARN] Token rinnovato ma config.json non aggiornato (' + e.message + '): si riprova al prossimo avvio.');
+    }
+  }
+
+  function onPoll401(used) {
+    if (used.pending) dropPending('rifiutato dal server');
+  }
+
+  function rotationDue() {
+    if (!canRotate() || cfg.pendingToken) return false;
+    const issued = Date.parse(cfg.tokenIssuedAt || '');
+    return !Number.isFinite(issued) || now() - issued > ROTATE_AFTER_MS;
+  }
+
+  // Al più una richiesta ogni ROTATION_CHECK_MS; la prima dopo il primo poll
+  // riuscito. Ritorna true se ha ottenuto e salvato un token nuovo.
+  async function maybeRotate() {
+    if (lastCheck !== null && now() - lastCheck < ROTATION_CHECK_MS) return false;
+    lastCheck = now();
+    if (!rotationDue()) return false;
+
+    let res;
+    try {
+      res = await net(cfg.baseUrl + '/api/studio/agent/token/rotate', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + cfg.token },
+      });
+    } catch (e) {
+      warn('[WARN] Rinnovo del token: errore di rete (' + e.message + '), si riprova più tardi.');
+      return false;
+    }
+    if (!res.ok) {
+      warn('[WARN] Rinnovo del token: risposta ' + res.status + ', si riprova più tardi.');
+      return false;
+    }
+    let data;
+    try {
+      data = await res.json();
+    } catch (e) {
+      warn('[WARN] Rinnovo del token: risposta non valida.');
+      return false;
+    }
+    if (!data || typeof data.token !== 'string' || data.token.length < 16) {
+      warn('[WARN] Rinnovo del token: risposta senza token.');
+      return false;
+    }
+    const issuedAt = typeof data.issuedAt === 'string' ? data.issuedAt : new Date(now()).toISOString();
+    try {
+      writeConfigAtomic(cfg.configPath, { pendingToken: data.token, pendingIssuedAt: issuedAt });
+    } catch (e) {
+      // Regola 1: non salvato = non usato. Il corrente resta valido.
+      warn('[WARN] Rinnovo del token: impossibile salvare config.json (' + e.message + '), token nuovo non usato.');
+      return false;
+    }
+    cfg.pendingToken = data.token;
+    cfg.pendingIssuedAt = issuedAt;
+    log('[TOKEN] Token nuovo ricevuto e salvato: in uso dal prossimo poll.');
+    return true;
+  }
+
+  return { forPoll, onPollOk, onPoll401, maybeRotate, rotationDue };
+}
+
+let tokens;
 
 // ─── Path security ────────────────────────────────────────────────────────────
 function isWithin(abs, dir) {
@@ -562,13 +734,14 @@ async function pollOnce() {
     if (config.workspaceDir) pollBody.workspaceDir = config.workspaceDir;
     if (config.label)        pollBody.label = config.label;
 
+    const used = tokens.forPoll();
     let pollRes;
     try {
       pollRes = await fetch(config.baseUrl + '/api/studio/agent/poll', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + config.token,
+          'Authorization': 'Bearer ' + used.token,
         },
         body: JSON.stringify(pollBody),
       });
@@ -578,7 +751,9 @@ async function pollOnce() {
     }
 
     if (!pollRes.ok) {
-      if (pollRes.status === 401) {
+      if (pollRes.status === 401 && used.pending) {
+        tokens.onPoll401(used);
+      } else if (pollRes.status === 401) {
         console.error('[ERRORE] Token non valido o scaduto (401). Verifica la configurazione.');
         console.error('         Verifica che baseUrl sia https://www.taxami.it (con www).');
       } else {
@@ -586,6 +761,8 @@ async function pollOnce() {
       }
       return;
     }
+
+    tokens.onPollOk(used);
 
     let pollData;
     try {
@@ -596,7 +773,11 @@ async function pollOnce() {
     }
 
     const { op } = pollData;
-    if (!op) return; // nessun lavoro
+    if (!op) {
+      // Nessun lavoro: momento giusto per il controllo della rotazione.
+      await tokens.maybeRotate();
+      return;
+    }
 
     console.log('[OP] ' + op.id + ' → ' + op.action);
 
@@ -720,6 +901,7 @@ async function main() {
 
   config = await loadConfig();
   if (!config) return; // fatalExit già in corso (TTY: in attesa di INVIO; non-TTY: già uscito)
+  tokens = createTokenState(config);
 
   // Stampa config (token mascherato)
   const maskedToken = config.token.length > 8
@@ -731,6 +913,9 @@ async function main() {
   console.log('  allowedDirs: ' + config.allowedDirs.join(', '));
   if (config.workspaceDir) console.log('  workspaceDir: ' + config.workspaceDir);
   if (config.label)        console.log('  label       : ' + config.label);
+  if (config.tokenFromEnv) {
+    console.log('  rinnovo token: no (token da TAXAMI_AGENT_TOKEN, non salvabile)');
+  }
   console.log('');
   console.log('Agente avviato, in ascolto...');
 
@@ -756,6 +941,8 @@ module.exports = {
   writeNewFile,
   readFileNoFollow,
   dispatchOp,
+  createTokenState,
+  writeConfigAtomic,
   _setConfigForTests,
 };
 
