@@ -33,7 +33,9 @@ function link(target, at, type) {
 before(() => {
   process.env.TAXAMI_STUDIO_AGENT_NO_MAIN = '1';
   agent = require('../studio-agent.js');
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'taxami-agent-real-')));
+  // realpathSync.native, come fsp.realpath nell'agente: su Windows espande
+  // anche i nomi brevi 8.3 della cartella temporanea (RUNNER~1).
+  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'taxami-agent-real-')));
   allowed = path.join(root, 'clienti');
   allowed2 = path.join(root, 'archivio');
   outside = path.join(root, 'riservato');
