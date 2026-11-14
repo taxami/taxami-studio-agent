@@ -422,17 +422,26 @@ async function realPathOf(target) {
   }
 }
 
-// Autorizzato se il percorso sta in una delle allowedDirs sia come testo sia
-// dopo aver risolto i collegamenti: un collegamento simbolico o una junction
-// dentro una cartella autorizzata che punta fuori viene rifiutato.
-async function isAllowed(target, allowedDirs) {
+// Percorso reale autorizzato, o null. Autorizzato se il percorso sta in una
+// delle allowedDirs sia come testo sia dopo aver risolto i collegamenti: un
+// collegamento simbolico o una junction dentro una cartella autorizzata che
+// punta fuori viene rifiutato.
+//
+// Gli handler lavorano sul percorso REALE restituito qui, non su quello
+// testuale (SEC-032 d): un collegamento messo al posto del percorso testuale
+// DOPO il controllo non lo devia più. Resta un residuo: una cartella
+// intermedia del percorso reale sostituita con un collegamento fra il
+// controllo e l'uso (serve un processo locale che scrive già nella cartella
+// autorizzata). Per l'ultimo componente le aperture sotto aggiungono
+// O_NOFOLLOW dove esiste e le scritture creano solo file nuovi (wx).
+async function allowedRealPath(target, allowedDirs) {
   const dirs = allowedDirs || config.allowedDirs;
-  if (typeof target !== 'string' || target === '') return false;
+  if (typeof target !== 'string' || target === '') return null;
   const abs = path.resolve(target);
-  if (!dirs.some((dir) => isWithin(abs, path.resolve(dir)))) return false;
+  if (!dirs.some((dir) => isWithin(abs, path.resolve(dir)))) return null;
 
   const real = await realPathOf(abs);
-  if (!real) return false;
+  if (!real) return null;
   for (const dir of dirs) {
     let realDir;
     try {
@@ -440,9 +449,42 @@ async function isAllowed(target, allowedDirs) {
     } catch {
       continue; // cartella autorizzata inesistente: non autorizza nulla
     }
-    if (isWithin(real, realDir)) return true;
+    if (isWithin(real, realDir)) return real;
   }
-  return false;
+  return null;
+}
+
+async function isAllowed(target, allowedDirs) {
+  return (await allowedRealPath(target, allowedDirs)) !== null;
+}
+
+async function requireAllowed(target, message) {
+  const real = await allowedRealPath(target);
+  if (!real) throw new Error(message + target);
+  return real;
+}
+
+// Lettura che non segue un collegamento all'ultimo componente, dove il
+// sistema lo permette (Linux, macOS: O_NOFOLLOW; su Windows non esiste).
+const NOFOLLOW = fs.constants.O_NOFOLLOW || 0;
+async function openForRead(realPath) {
+  return fsp.open(realPath, fs.constants.O_RDONLY | NOFOLLOW);
+}
+
+async function readFileNoFollow(realPath, encoding) {
+  const fd = await openForRead(realPath);
+  try {
+    return await fd.readFile(encoding ? { encoding } : undefined);
+  } finally {
+    await fd.close().catch(() => {});
+  }
+}
+
+// Scrive SOLO un file nuovo ('wx' = O_CREAT|O_EXCL): se nel frattempo al suo
+// posto è comparso qualcosa, anche un collegamento, la scrittura fallisce
+// invece di seguirlo o sovrascrivere.
+async function writeNewFile(realPath, data, encoding) {
+  await fsp.writeFile(realPath, data, encoding ? { encoding, flag: 'wx' } : { flag: 'wx' });
 }
 
 // ─── Auto-rename helper (never overwrite) ────────────────────────────────────
@@ -460,18 +502,14 @@ async function uniquePath(absPath) {
 // ─── Op handlers ─────────────────────────────────────────────────────────────
 
 async function handleReadFile({ path: filePath, maxChars }) {
-  if (!(await isAllowed(filePath))) {
-    throw new Error('Percorso non autorizzato: ' + filePath);
-  }
-
-  const abs = path.resolve(filePath);
+  const abs = await requireAllowed(filePath, 'Percorso non autorizzato: ');
   const MAX = typeof maxChars === 'number' && maxChars > 0 ? maxChars : 100000;
 
   // Binary heuristic: read first 8KB and check for NUL byte
   const PROBE = 8192;
   let fd;
   try {
-    fd = await fsp.open(abs, 'r');
+    fd = await openForRead(abs);
     const buf = Buffer.alloc(PROBE);
     const { bytesRead } = await fd.read(buf, 0, PROBE, 0);
     await fd.close();
@@ -484,7 +522,7 @@ async function handleReadFile({ path: filePath, maxChars }) {
     if (fd) await fd.close().catch(() => {});
   }
 
-  const raw = await fsp.readFile(abs, 'utf-8');
+  const raw = await readFileNoFollow(abs, 'utf-8');
   if (raw.length > MAX) {
     return raw.slice(0, MAX) + '\n…[troncato]';
   }
@@ -492,11 +530,7 @@ async function handleReadFile({ path: filePath, maxChars }) {
 }
 
 async function handleListDir({ path: dirPath, recursive }) {
-  if (!(await isAllowed(dirPath))) {
-    throw new Error('Percorso non autorizzato: ' + dirPath);
-  }
-
-  const abs = path.resolve(dirPath);
+  const abs = await requireAllowed(dirPath, 'Percorso non autorizzato: ');
   const lines = [];
   let capped = false;
   const CAP = 500;
@@ -530,11 +564,7 @@ async function handleListDir({ path: dirPath, recursive }) {
 }
 
 async function handleSearchFiles({ query, dir, searchContent }) {
-  if (!(await isAllowed(dir))) {
-    throw new Error('Percorso non autorizzato: ' + dir);
-  }
-
-  const abs = path.resolve(dir);
+  const abs = await requireAllowed(dir, 'Percorso non autorizzato: ');
   const lowerQuery = query.toLowerCase();
   const matches = [];
   let scanned = 0;
@@ -571,7 +601,7 @@ async function handleSearchFiles({ query, dir, searchContent }) {
         try {
           const stat = await fsp.stat(fullPath);
           if (stat.size <= MAX_CONTENT_SIZE) {
-            const content = await fsp.readFile(fullPath, 'utf-8');
+            const content = await readFileNoFollow(fullPath, 'utf-8');
             if (content.toLowerCase().includes(lowerQuery)) {
               matches.push(fullPath);
             }
@@ -600,61 +630,56 @@ async function handleSearchFiles({ query, dir, searchContent }) {
 }
 
 async function handleWriteFile({ path: filePath, content }) {
-  if (!(await isAllowed(filePath))) {
-    throw new Error('Percorso non autorizzato: ' + filePath);
-  }
+  const abs = await requireAllowed(filePath, 'Percorso non autorizzato: ');
   if (typeof content !== 'string') {
     throw new Error('Il parametro content deve essere una stringa.');
   }
-  const abs = path.resolve(filePath);
   const final = await uniquePath(abs);
   await fsp.mkdir(path.dirname(final), { recursive: true });
-  await fsp.writeFile(final, content, 'utf-8');
+  await writeNewFile(final, content, 'utf-8');
   const bytes = Buffer.byteLength(content, 'utf-8');
   return 'File scritto: ' + final + ' (' + bytes + ' byte)';
 }
 
 async function handleReadBinary({ path: filePath, maxBytes }) {
-  if (!(await isAllowed(filePath))) {
-    throw new Error('Percorso non autorizzato: ' + filePath);
-  }
-  const abs = path.resolve(filePath);
+  const abs = await requireAllowed(filePath, 'Percorso non autorizzato: ');
   const MAX_DEFAULT = 5_000_000;
   const MAX_HARD    = 8_000_000;
   const limit = (typeof maxBytes === 'number' && maxBytes > 0)
     ? Math.min(maxBytes, MAX_HARD)
     : MAX_DEFAULT;
-  const stat = await fsp.stat(abs);
-  if (stat.size > limit) {
-    throw new Error(
-      'File troppo grande (' + stat.size + ' byte, max ' + limit + ')'
-    );
+  const fd = await openForRead(abs);
+  try {
+    const stat = await fd.stat();
+    if (stat.size > limit) {
+      throw new Error(
+        'File troppo grande (' + stat.size + ' byte, max ' + limit + ')'
+      );
+    }
+    const buf = await fd.readFile();
+    return buf.toString('base64');
+  } finally {
+    await fd.close().catch(() => {});
   }
-  const buf = await fsp.readFile(abs);
-  return buf.toString('base64');
 }
 
 async function handleWriteBinary({ path: filePath, contentBase64 }) {
-  if (!(await isAllowed(filePath))) {
-    throw new Error('Percorso non autorizzato: ' + filePath);
-  }
+  const abs = await requireAllowed(filePath, 'Percorso non autorizzato: ');
   if (typeof contentBase64 !== 'string' || contentBase64.length === 0) {
     throw new Error('Il parametro contentBase64 deve essere una stringa non vuota.');
   }
-  const abs = path.resolve(filePath);
   const final = await uniquePath(abs);
   await fsp.mkdir(path.dirname(final), { recursive: true });
   const buf = Buffer.from(contentBase64, 'base64');
-  await fsp.writeFile(final, buf);
+  await writeNewFile(final, buf);
   return 'File scritto: ' + final + ' (' + buf.length + ' byte)';
 }
 
 async function handleFileInfo({ path: filePath }) {
-  if (!(await isAllowed(filePath))) {
-    throw new Error('Percorso non autorizzato: ' + filePath);
-  }
-  const abs = path.resolve(filePath);
-  const stat = await fsp.stat(abs);
+  const abs = await requireAllowed(filePath, 'Percorso non autorizzato: ');
+  // lstat: informazioni sul percorso reale verificato, senza seguire un
+  // collegamento comparso nel frattempo.
+  const stat = await fsp.lstat(abs);
   return JSON.stringify({
     path: abs,
     isDirectory: stat.isDirectory(),
@@ -665,28 +690,17 @@ async function handleFileInfo({ path: filePath }) {
 }
 
 async function handleCopyFile({ sourcePath, destPath }) {
-  if (!(await isAllowed(sourcePath))) {
-    throw new Error('Percorso di origine non autorizzato: ' + sourcePath);
-  }
-  if (!(await isAllowed(destPath))) {
-    throw new Error('Percorso di destinazione non autorizzato: ' + destPath);
-  }
-  const absSrc = path.resolve(sourcePath);
-  const absDest = await uniquePath(path.resolve(destPath));
+  const absSrc = await requireAllowed(sourcePath, 'Percorso di origine non autorizzato: ');
+  const absDest = await uniquePath(await requireAllowed(destPath, 'Percorso di destinazione non autorizzato: '));
   await fsp.mkdir(path.dirname(absDest), { recursive: true });
-  await fsp.copyFile(absSrc, absDest);
+  // COPYFILE_EXCL: la destinazione deve essere nuova, come per le scritture.
+  await fsp.copyFile(absSrc, absDest, fs.constants.COPYFILE_EXCL);
   return 'File copiato: ' + absDest;
 }
 
 async function handleMoveFile({ sourcePath, destPath }) {
-  if (!(await isAllowed(sourcePath))) {
-    throw new Error('Percorso di origine non autorizzato: ' + sourcePath);
-  }
-  if (!(await isAllowed(destPath))) {
-    throw new Error('Percorso di destinazione non autorizzato: ' + destPath);
-  }
-  const absSrc = path.resolve(sourcePath);
-  const absDest = await uniquePath(path.resolve(destPath));
+  const absSrc = await requireAllowed(sourcePath, 'Percorso di origine non autorizzato: ');
+  const absDest = await uniquePath(await requireAllowed(destPath, 'Percorso di destinazione non autorizzato: '));
   await fsp.mkdir(path.dirname(absDest), { recursive: true });
   await fsp.rename(absSrc, absDest);
   return 'File spostato: ' + absDest;
@@ -914,7 +928,23 @@ async function main() {
   pollOnce().catch(e => console.warn('[WARN] Errore inatteso nel poll iniziale: ' + e.message));
 }
 
-module.exports = { isAllowed, realPathOf, createTokenState, writeConfigAtomic };
+// _setConfigForTests: i test di dispatchOp impostano allowedDirs senza avviare
+// l'agente (nessun uso fuori dai test).
+function _setConfigForTests(c) {
+  config = c;
+}
+
+module.exports = {
+  isAllowed,
+  allowedRealPath,
+  realPathOf,
+  writeNewFile,
+  readFileNoFollow,
+  dispatchOp,
+  createTokenState,
+  writeConfigAtomic,
+  _setConfigForTests,
+};
 
 // I test caricano il modulo senza avviare l'agente.
 if (process.env.TAXAMI_STUDIO_AGENT_NO_MAIN !== '1') {
